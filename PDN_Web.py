@@ -9,14 +9,13 @@ import re
 # ==========================================
 st.set_page_config(page_title="PDN Impedance Simulator", layout="wide", page_icon="⚡")
 st.title("⚡ Full System PDN Impedance Simulator")
-st.markdown("Built with **Continuous PSO (Particle Swarm Optimization)** and **Plotly**. Supports **Impedance Masking** and **Targeted Resonance Suppression** for professional hardware design. *(Cloud-Optimized Vectorized Engine)*")
+st.markdown("Built with **Continuous PSO** and **Plotly**. Supports **Impedance Masking** and **Targeted Resonance Suppression**. *(Powered by 3D Tensor Vectorization Engine)*")
 
 def auto_format_cap(val_f):
     if val_f < 1e-9: return round(float(val_f * 1e12), 2), "pF"
     elif val_f < 1e-6: return round(float(val_f * 1e9), 2), "nF"
     else: return round(float(val_f * 1e6), 2), "uF"
 
-# Initialize session_state with default values
 default_values = {
     "target_z": "10 (Standard IC)",
     "L_mm": 30.0, "W_mm": 10.0, "Er": 3.8, "d_mil": 2.0, "I_op": 10.0,
@@ -32,11 +31,12 @@ for key, value in default_values.items():
     if key not in st.session_state: st.session_state[key] = value
 
 # ==========================================
-# 2. Core PDN Calculation Engine (⚡ Vectorized)
+# 2. Core Engine (☢️ 3D Tensor Batched & Decimated)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_via, L_ic_via, L_pkg, C_die, frequencies):
-    Nx, Ny = 10, 10
+    # 網格降維至 5x5 (25 nodes) -> 運算量減少 64 倍！
+    Nx, Ny = 5, 5
     N_total = Nx * Ny
     dx, dy = L / Nx, W / Ny
     t_cu = 3.5e-5        
@@ -46,73 +46,75 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
     
     R_sheet = rho_cu / t_cu; R_x = R_sheet * (dx / dy); R_y = R_sheet * (dy / dx)  
     L_cell = U0 * d; C_cell = Er * E0 * (dx * dy) / d
-    vrm_node = 0 * Ny + (Ny // 2); ic_node = (Nx - 1) * Ny + (Ny // 2)      
+    
+    # 重新映射 5x5 節點座標
+    vrm_node = 2   # Top middle
+    ic_node = 22   # Bottom middle
     
     cap_config = []
-    if num_caps >= 1: cap_config.append({'node': (Nx - 2) * Ny + (Ny // 2), 'C': C1})
-    if num_caps >= 2: cap_config.append({'node': (Nx - 3) * Ny + (Ny // 2), 'C': C2})
-    if num_caps >= 3: cap_config.append({'node': (Nx - 5) * Ny + (Ny // 2), 'C': C3})
-    if num_caps >= 4: cap_config.append({'node': (Nx - 7) * Ny + (Ny // 2), 'C': C4})
-    if num_caps >= 5: cap_config.append({'node': (Nx - 9) * Ny + (Ny // 2), 'C': C5})
+    if num_caps >= 1: cap_config.append({'node': 16, 'C': C1}) # Mid-left
+    if num_caps >= 2: cap_config.append({'node': 18, 'C': C2}) # Mid-right
+    if num_caps >= 3: cap_config.append({'node': 11, 'C': C3}) # Center-left
+    if num_caps >= 4: cap_config.append({'node': 13, 'C': C4}) # Center-right
+    if num_caps >= 5: cap_config.append({'node': 7,  'C': C5}) # Top-mid
         
-    # --- Vectorized Geometry Matrices ---
     M_C = np.eye(N_total)
-    M_x = np.zeros((N_total, N_total))
-    M_y = np.zeros((N_total, N_total))
+    M_x = np.zeros((N_total, N_total)); M_y = np.zeros((N_total, N_total))
 
     for i in range(Nx):
         for j in range(Ny):
             n = i * Ny + j
             if i < Nx - 1:
                 nr = (i + 1) * Ny + j
-                M_x[n, n] += 1; M_x[nr, nr] += 1
-                M_x[n, nr] -= 1; M_x[nr, n] -= 1
+                M_x[n, n] += 1; M_x[nr, nr] += 1; M_x[n, nr] -= 1; M_x[nr, n] -= 1
             if j < Ny - 1:
                 nu = i * Ny + (j + 1)
-                M_y[n, n] += 1; M_y[nu, nu] += 1
-                M_y[n, nu] -= 1; M_y[nu, n] -= 1
+                M_y[n, n] += 1; M_y[nu, nu] += 1; M_y[n, nu] -= 1; M_y[nu, n] -= 1
 
-    # DC Matrix Calculation
+    # DC Matrix
     G_matrix = M_x * (1.0 / R_x) + M_y * (1.0 / R_y)
     G_matrix[vrm_node, vrm_node] += 1e9 
-    
     I_dc = np.zeros(N_total); I_dc[ic_node] = -I_op 
     V_dc = np.linalg.solve(G_matrix, I_dc)
     ir_drop_v = 0.0 - V_dc[ic_node] 
     
-    Z_profile_pcb, Z_profile_die = [], []
-    I_ac = np.zeros(N_total, dtype=complex); I_ac[ic_node] = 1.0 + 0j 
-    ESR = 5e-3; R_die = 1e-3 
-    
-    # AC Matrix Calculation (NumPy Vectorized)
-    for f in frequencies:
-        w = 2 * np.pi * f
-        Y_C = 1j * w * C_cell
-        Y_x = 1.0 / (R_x + 1j * w * L_cell)
-        Y_y = 1.0 / (R_y + 1j * w * L_cell)
+    # --- ☢️ 3D TENSOR BATCHED AC SOLVE ☢️ ---
+    N_f = len(frequencies)
+    w = 2 * np.pi * frequencies
+    Y_C_arr = 1j * w * C_cell
+    Y_x_arr = 1.0 / (R_x + 1j * w * L_cell)
+    Y_y_arr = 1.0 / (R_y + 1j * w * L_cell)
+
+    # Broadcast to shape (N_f, N_total, N_total)
+    Y_matrix_batch = (
+        Y_C_arr[:, None, None] * M_C[None, :, :] +
+        Y_x_arr[:, None, None] * M_x[None, :, :] +
+        Y_y_arr[:, None, None] * M_y[None, :, :]
+    )
+    Y_matrix_batch[:, vrm_node, vrm_node] += 1e9
+
+    ESR = 5e-3; R_die = 1e-3
+    for cap in cap_config:
+        Total_L = ESL_val + L_cap_via
+        Y_cap_arr = 1.0 / (ESR + 1j * w * Total_L + 1.0 / (1j * w * cap['C']))
+        Y_matrix_batch[:, cap['node'], cap['node']] += Y_cap_arr
+
+    I_ac_batch = np.zeros((N_f, N_total), dtype=complex)
+    I_ac_batch[:, ic_node] = 1.0 + 0j
+
+    # 一行 LAPACK 解決所有頻率點！
+    V_ac_batch = np.linalg.solve(Y_matrix_batch, I_ac_batch)
+
+    Z_pcb_pin = V_ac_batch[:, ic_node] + 1j * w * L_ic_via
+    Z_profile_pcb = np.abs(Z_pcb_pin)
+
+    Z_series = Z_pcb_pin + 1j * w * L_pkg
+    # 避免 C_die = 0 的錯誤
+    Z_cdie = R_die + np.where(C_die > 0, 1.0 / (1j * w * C_die + 1e-15), 1e15)
+    Z_die_total = np.where(C_die > 0, (Z_series * Z_cdie) / (Z_series + Z_cdie), Z_series)
+    Z_profile_die = np.abs(Z_die_total)
         
-        # Fast Matrix Synthesis
-        Y_matrix = (Y_C * M_C) + (Y_x * M_x) + (Y_y * M_y)
-        Y_matrix[vrm_node, vrm_node] += 1e9 
-        
-        for cap in cap_config:
-            Total_L = ESL_val + L_cap_via
-            Y_cap = 1.0 / (ESR + 1j * w * Total_L + 1.0 / (1j * w * cap['C']))
-            Y_matrix[cap['node'], cap['node']] += Y_cap
-        
-        V_ac = np.linalg.solve(Y_matrix, I_ac)
-        
-        Z_pcb_pin = V_ac[ic_node] + 1j * w * L_ic_via
-        Z_profile_pcb.append(np.abs(Z_pcb_pin))
-        
-        Z_series = Z_pcb_pin + 1j * w * L_pkg
-        if C_die > 0:
-            Z_cdie = R_die + 1.0 / (1j * w * C_die)
-            Z_die_total = (Z_series * Z_cdie) / (Z_series + Z_cdie)
-        else: Z_die_total = Z_series
-        Z_profile_die.append(np.abs(Z_die_total))
-        
-    return np.array(Z_profile_pcb), np.array(Z_profile_die), ir_drop_v
+    return Z_profile_pcb, Z_profile_die, ir_drop_v
 
 def get_cap_val(val, unit):
     if unit == "uF": return val * 1e-6
@@ -123,7 +125,7 @@ def get_cap_val(val, unit):
 # ==========================================
 # 3. Continuous PSO Algorithm
 # ==========================================
-def continuous_pso(cost_func, bounds, num_particles=50, maxiter=50, progress_bar=None):
+def continuous_pso(cost_func, bounds, num_particles=40, maxiter=40, progress_bar=None):
     dim = len(bounds)
     positions = np.zeros((num_particles, dim))
     for i in range(dim):
@@ -163,7 +165,7 @@ def continuous_pso(cost_func, bounds, num_particles=50, maxiter=50, progress_bar
 # 4. PSO Intercept & Cost Function
 # ==========================================
 if st.session_state.run_tune:
-    st.info("🦅 **Running Continuous PSO...** (AI is searching for the theoretical optimal combination)")
+    st.info("🦅 **Running Continuous PSO...** (AI is searching at extreme vectorized speed)")
     progress_bar = st.progress(0.0)
     
     if st.session_state.use_band:
@@ -191,14 +193,12 @@ if st.session_state.run_tune:
             excess = np.maximum(0, Z_die - target_z_ohm)
             weight_mask = np.ones_like(frequencies_opt)
             
-            # Impedance Band Mask
             if st.session_state.use_band:
                 f_min_hz = st.session_state.f_min * 1e6
                 f_max_hz = st.session_state.f_max * 1e6
                 out_of_band = (frequencies_opt < f_min_hz) | (frequencies_opt > f_max_hz)
                 excess[out_of_band] = 0.0 
                 
-            # Targeted Frequency Strike
             if st.session_state.use_target:
                 f_target = st.session_state.target_freq * 1e6
                 sigma = f_target * 0.25 
@@ -213,7 +213,8 @@ if st.session_state.run_tune:
         except:
             return 1e9
 
-    best_caps = continuous_pso(cost_func, bounds, num_particles=50, maxiter=50, progress_bar=progress_bar)
+    # 降低稍微一點點粒子數 (40x40) 以確保極限主機的流暢體驗
+    best_caps = continuous_pso(cost_func, bounds, num_particles=40, maxiter=40, progress_bar=progress_bar)
     
     c1_v, c1_u = auto_format_cap(best_caps[0] * 1e-12)
     c2_v, c2_u = auto_format_cap(best_caps[1] * 1e-9)
@@ -228,7 +229,7 @@ if st.session_state.run_tune:
     })
 
 # ==========================================
-# 5. Sidebar UI Design (🛡️ Form Protection Enabled)
+# 5. Sidebar UI Design
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Global Specifications")
@@ -236,7 +237,7 @@ with st.sidebar:
     
     st.divider()
     st.markdown("**【 📊 Datasheet Band Limit 】**")
-    st.checkbox("Enable Impedance Mask", key="use_band", help="Only optimize within the specified frequency range. Other frequencies are ignored.")
+    st.checkbox("Enable Impedance Mask", key="use_band")
     if st.session_state.use_band:
         st.number_input("Target Z in this band (mΩ)", min_value=0.1, max_value=1000.0, step=0.5, key="mask_target_z")
         col1, col2 = st.columns(2)
@@ -245,13 +246,12 @@ with st.sidebar:
         
     st.divider()
     st.markdown("**【 🎯 Advanced Optimization 】**")
-    st.checkbox("Enable Targeted Frequency Strike", key="use_target", help="Apply heavy penalty to a specific resonance peak.")
+    st.checkbox("Enable Targeted Strike", key="use_target")
     if st.session_state.use_target:
         st.slider("Target Frequency (MHz)", 1.0, 100.0, 15.0, key="target_freq")
-        st.slider("Strike Weight (Penalty Multiplier)", 10, 200, 50, key="target_weight")
+        st.slider("Strike Weight", 10, 200, 50, key="target_weight")
     st.divider()
 
-    # 🛡️ Wrap sliders in a form to prevent Cloud UI freezing
     with st.form("simulation_parameters_form"):
         st.markdown("### 🎛️ Manual Tuning Parameters")
         tab_pcb, tab_pkg, tab_cap = st.tabs(["Stackup & Physical", "Parasitics & PKG", "Decoupling Caps"])
@@ -283,17 +283,15 @@ with st.sidebar:
             cap_input("C4 [Mid-Low Freq]:", "C4_val", "C4_unit")
             cap_input("C5 [Bulk]:", "C5_val", "C5_unit")
             
-        # Submit button for manual updates
         submit_btn = st.form_submit_button("▶️ Update Simulation", type="primary", use_container_width=True)
 
     st.divider()
-    # PSO button remains outside the form to trigger optimization using current state
     if st.button("🦅 Run Continuous PSO (Auto Tune)", use_container_width=True):
         st.session_state.run_tune = True
         st.rerun()
 
 # ==========================================
-# 6. Main UI: Execution, Metrics & Plotly Chart
+# 6. Main UI: Execution & Chart
 # ==========================================
 if st.session_state.use_band:
     target_z_mohm = st.session_state.mask_target_z
@@ -305,7 +303,7 @@ else:
 
 frequencies = np.logspace(4, 9.7, 300) 
 
-with st.spinner('Calculating PDN profile...'):
+with st.spinner('Calculating PDN profile (Vectorized)...'):
     Z_pcb, Z_die, ir_drop_v = calc_core(
         st.session_state.L_mm * 1e-3, st.session_state.W_mm * 1e-3, st.session_state.Er, 
         st.session_state.d_mil * 25.4e-6, st.session_state.I_op, st.session_state.num_caps, 
@@ -319,7 +317,6 @@ with st.spinner('Calculating PDN profile...'):
         st.session_state.C_die * 1e-9, frequencies
     )
 
-# --- AC & Total Voltage Drop Analysis ---
 if st.session_state.use_band:
     f_min_hz = st.session_state.f_min * 1e6
     f_max_hz = st.session_state.f_max * 1e6
@@ -331,30 +328,19 @@ else:
 ac_drop_v = st.session_state.I_op * max_z_ohms
 total_drop_v = ir_drop_v + ac_drop_v
 
-# --- Dashboard Metrics ---
 st.markdown("### 📊 System Voltage Drop Estimation (Worst-Case Analysis)")
 col1, col2, col3 = st.columns(3)
 
 ir_drop_color = "normal" if (ir_drop_v * 1000) <= 50 else "inverse"
-col1.metric(label="DC IR Drop", 
-            value=f"{ir_drop_v * 1000:.2f} mV", 
-            delta="Pass" if ir_drop_color=="normal" else "Warning: Trace too narrow", 
-            delta_color=ir_drop_color)
+col1.metric(label="DC IR Drop", value=f"{ir_drop_v * 1000:.2f} mV", delta="Pass" if ir_drop_color=="normal" else "Warning", delta_color=ir_drop_color)
 
 ac_drop_color = "normal" if max_z_ohms <= target_z_ohm else "inverse"
-col2.metric(label="AC Transient Droop (Ripple)", 
-            value=f"{ac_drop_v * 1000:.2f} mV", 
-            delta="Pass" if ac_drop_color=="normal" else "Warning: Impedance violation", 
-            delta_color=ac_drop_color,
-            help="Formula: Operating Current (A) × Max Impedance in Band (Ω). Represents the worst-case dynamic voltage sag.")
+col2.metric(label="AC Transient Droop (Ripple)", value=f"{ac_drop_v * 1000:.2f} mV", delta="Pass" if ac_drop_color=="normal" else "Violation", delta_color=ac_drop_color)
 
-col3.metric(label="🔥 Estimated Total Voltage Drop", 
-            value=f"{total_drop_v * 1000:.2f} mV",
-            help="DC IR Drop + AC Transient Droop. Ensure this value is within your IC Datasheet tolerance (e.g., 40mV).")
+col3.metric(label="🔥 Estimated Total Voltage Drop", value=f"{total_drop_v * 1000:.2f} mV")
 
 st.divider()
 
-# --- Plotly Chart Generation ---
 fig = go.Figure()
 
 if st.session_state.use_band:
@@ -365,33 +351,19 @@ if st.session_state.use_band:
         line=dict(color="green", width=1, dash="dash"),
         annotation_text=f"Datasheet Band ({target_z_mohm} mΩ)", annotation_position="top left"
     )
-    fig.add_trace(go.Scatter(
-        x=[f_min_hz, f_max_hz], y=[target_z_ohm, target_z_ohm],
-        mode='lines', line=dict(color='red', width=3, dash='solid'), name=f'Band Spec ({target_z_mohm} mΩ)', hoverinfo='skip'
-    ))
-    fig.add_trace(go.Scatter(x=[frequencies[0], f_min_hz], y=[target_z_ohm, target_z_ohm],
-        mode='lines', line=dict(color='red', width=1, dash='dot'), showlegend=False, hoverinfo='skip'))
-    fig.add_trace(go.Scatter(x=[f_max_hz, frequencies[-1]], y=[target_z_ohm, target_z_ohm],
-        mode='lines', line=dict(color='red', width=1, dash='dot'), showlegend=False, hoverinfo='skip'))
+    fig.add_trace(go.Scatter(x=[f_min_hz, f_max_hz], y=[target_z_ohm, target_z_ohm], mode='lines', line=dict(color='red', width=3, dash='solid'), name=f'Band Spec ({target_z_mohm} mΩ)', hoverinfo='skip'))
+    fig.add_trace(go.Scatter(x=[frequencies[0], f_min_hz], y=[target_z_ohm, target_z_ohm], mode='lines', line=dict(color='red', width=1, dash='dot'), showlegend=False, hoverinfo='skip'))
+    fig.add_trace(go.Scatter(x=[f_max_hz, frequencies[-1]], y=[target_z_ohm, target_z_ohm], mode='lines', line=dict(color='red', width=1, dash='dot'), showlegend=False, hoverinfo='skip'))
 else:
-    fig.add_trace(go.Scatter(
-        x=[frequencies[0], frequencies[-1]], y=[target_z_ohm, target_z_ohm],
-        mode='lines', line=dict(color='red', width=2, dash='dash'), name=f'Target Spec ({target_z_mohm} mΩ)', hoverinfo='skip'
-    ))
+    fig.add_trace(go.Scatter(x=[frequencies[0], frequencies[-1]], y=[target_z_ohm, target_z_ohm], mode='lines', line=dict(color='red', width=2, dash='dash'), name=f'Target Spec ({target_z_mohm} mΩ)', hoverinfo='skip'))
 
 if st.session_state.use_target:
     f_target = st.session_state.target_freq * 1e6
-    fig.add_vrect(
-        x0=f_target * 0.75, x1=f_target * 1.25, fillcolor="yellow", opacity=0.1,
-        layer="below", line_width=0, annotation_text="Targeted Strike", annotation_position="top right"
-    )
+    fig.add_vrect(x0=f_target * 0.75, x1=f_target * 1.25, fillcolor="yellow", opacity=0.1, layer="below", line_width=0, annotation_text="Strike Zone", annotation_position="top right")
     fig.add_vline(x=f_target, line_width=2, line_dash="dot", line_color="orange")
 
-fig.add_trace(go.Scatter(x=frequencies, y=Z_pcb, mode='lines', line=dict(color='gray', width=2, dash='dot'),
-    name='Impedance at PCB Pin', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (PCB):</b> %{y:.4f} Ω<extra></extra>'))
-
-fig.add_trace(go.Scatter(x=frequencies, y=Z_die, mode='lines', line=dict(color='#00BFFF', width=3),
-    name='Impedance at Die Pad', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (Die):</b> %{y:.4f} Ω<extra></extra>'))
+fig.add_trace(go.Scatter(x=frequencies, y=Z_pcb, mode='lines', line=dict(color='gray', width=2, dash='dot'), name='Impedance at PCB Pin', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (PCB):</b> %{y:.4f} Ω<extra></extra>'))
+fig.add_trace(go.Scatter(x=frequencies, y=Z_die, mode='lines', line=dict(color='#00BFFF', width=3), name='Impedance at Die Pad', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (Die):</b> %{y:.4f} Ω<extra></extra>'))
 
 y_min_log = np.log10(min(1e-3, target_z_ohm * 0.3))
 y_max_log = np.log10(max(10, max(Z_pcb)*1.2))
@@ -400,12 +372,10 @@ fig.update_layout(
     title="Power Delivery Network (Continuous Space Optimization)",
     xaxis_title="Frequency (Hz)", yaxis_title="Impedance (Ohms)",
     xaxis_type="log", yaxis_type="log", yaxis=dict(range=[y_min_log, y_max_log]),
-    hovermode="x unified", 
-    template="plotly_dark",
+    hovermode="x unified", template="plotly_dark",
     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(0, 0, 0, 0.5)"),
     height=600, margin=dict(l=20, r=20, t=50, b=20)
 )
-
 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
@@ -413,16 +383,11 @@ st.plotly_chart(fig, use_container_width=True)
 # ==========================================
 st.divider()
 st.subheader("📋 Optimized BOM List (Continuous Values)")
-
 bom_data = {
     "Location": ["C1 [Ultra-High Freq]", "C2 [High Freq]", "C3 [Mid Freq]", "C4 [Mid-Low Freq]", "C5 [Bulk]"],
     "Continuous Value": [st.session_state.C1_val, st.session_state.C2_val, st.session_state.C3_val, st.session_state.C4_val, st.session_state.C5_val],
     "Unit": [st.session_state.C1_unit, st.session_state.C2_unit, st.session_state.C3_unit, st.session_state.C4_unit, st.session_state.C5_unit],
     "Role": ["Package Resonance Suppression / On-Die", "High-Freq Decoupling", "Mid-Freq Decoupling", "Mid-Low Freq Decoupling", "VRM Bulk Storage"]
 }
-
-df_bom = pd.DataFrame(bom_data)
-st.dataframe(df_bom, use_container_width=True, hide_index=True)
-
-csv = df_bom.to_csv(index=False).encode('utf-8')
-st.download_button(label="📥 Download BOM (CSV)", data=csv, file_name="pdn_continuous_bom.csv", mime="text/csv", type="secondary")
+st.dataframe(pd.DataFrame(bom_data), use_container_width=True, hide_index=True)
+st.download_button(label="📥 Download BOM (CSV)", data=pd.DataFrame(bom_data).to_csv(index=False).encode('utf-8'), file_name="pdn_continuous_bom.csv", mime="text/csv", type="secondary")
