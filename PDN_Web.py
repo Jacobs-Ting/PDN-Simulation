@@ -8,8 +8,8 @@ import re
 # 1. Page Configuration & Initialization
 # ==========================================
 st.set_page_config(page_title="PDN Impedance Simulator", layout="wide", page_icon="⚡")
-st.title("⚡ Full System PDN Impedance Simulator (Continuous PSO)")
-st.markdown("Built with **Continuous PSO (Particle Swarm Optimization)** and **Plotly**. Supports **Impedance Masking** and **Targeted Resonance Suppression** for professional hardware design.")
+st.title("⚡ Full System PDN Impedance Simulator")
+st.markdown("Built with **Continuous PSO (Particle Swarm Optimization)** and **Plotly**. Supports **Impedance Masking** and **Targeted Resonance Suppression** for professional hardware design. *(Cloud-Optimized Vectorized Engine)*")
 
 def auto_format_cap(val_f):
     if val_f < 1e-9: return round(float(val_f * 1e12), 2), "pF"
@@ -32,7 +32,7 @@ for key, value in default_values.items():
     if key not in st.session_state: st.session_state[key] = value
 
 # ==========================================
-# 2. Core PDN Calculation Engine
+# 2. Core PDN Calculation Engine (⚡ Vectorized)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_via, L_ic_via, L_pkg, C_die, frequencies):
@@ -55,18 +55,27 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
     if num_caps >= 4: cap_config.append({'node': (Nx - 7) * Ny + (Ny // 2), 'C': C4})
     if num_caps >= 5: cap_config.append({'node': (Nx - 9) * Ny + (Ny // 2), 'C': C5})
         
-    G_matrix = np.zeros((N_total, N_total))
+    # --- Vectorized Geometry Matrices ---
+    M_C = np.eye(N_total)
+    M_x = np.zeros((N_total, N_total))
+    M_y = np.zeros((N_total, N_total))
+
     for i in range(Nx):
         for j in range(Ny):
             n = i * Ny + j
             if i < Nx - 1:
-                nr = (i + 1) * Ny + j; g = 1.0 / R_x
-                G_matrix[n, n] += g; G_matrix[nr, nr] += g; G_matrix[n, nr] -= g; G_matrix[nr, n] -= g
+                nr = (i + 1) * Ny + j
+                M_x[n, n] += 1; M_x[nr, nr] += 1
+                M_x[n, nr] -= 1; M_x[nr, n] -= 1
             if j < Ny - 1:
-                nu = i * Ny + (j + 1); g = 1.0 / R_y
-                G_matrix[n, n] += g; G_matrix[nu, nu] += g; G_matrix[n, nu] -= g; G_matrix[nu, n] -= g
-    
+                nu = i * Ny + (j + 1)
+                M_y[n, n] += 1; M_y[nu, nu] += 1
+                M_y[n, nu] -= 1; M_y[nu, n] -= 1
+
+    # DC Matrix Calculation
+    G_matrix = M_x * (1.0 / R_x) + M_y * (1.0 / R_y)
     G_matrix[vrm_node, vrm_node] += 1e9 
+    
     I_dc = np.zeros(N_total); I_dc[ic_node] = -I_op 
     V_dc = np.linalg.solve(G_matrix, I_dc)
     ir_drop_v = 0.0 - V_dc[ic_node] 
@@ -75,26 +84,24 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
     I_ac = np.zeros(N_total, dtype=complex); I_ac[ic_node] = 1.0 + 0j 
     ESR = 5e-3; R_die = 1e-3 
     
+    # AC Matrix Calculation (NumPy Vectorized)
     for f in frequencies:
         w = 2 * np.pi * f
-        Y_matrix = np.zeros((N_total, N_total), dtype=complex)
-        Y_C = 1j * w * C_cell; Y_x = 1.0 / (R_x + 1j * w * L_cell); Y_y = 1.0 / (R_y + 1j * w * L_cell)
+        Y_C = 1j * w * C_cell
+        Y_x = 1.0 / (R_x + 1j * w * L_cell)
+        Y_y = 1.0 / (R_y + 1j * w * L_cell)
         
-        for i in range(Nx):
-            for j in range(Ny):
-                n = i * Ny + j; Y_matrix[n, n] += Y_C
-                if i < Nx - 1:
-                    nr = (i + 1) * Ny + j; Y_matrix[n, n] += Y_x; Y_matrix[nr, nr] += Y_x; Y_matrix[n, nr] -= Y_x; Y_matrix[nr, n] -= Y_x
-                if j < Ny - 1:
-                    nu = i * Ny + (j + 1); Y_matrix[n, n] += Y_y; Y_matrix[nu, nu] += Y_y; Y_matrix[n, nu] -= Y_y; Y_matrix[nu, n] -= Y_y
-        
+        # Fast Matrix Synthesis
+        Y_matrix = (Y_C * M_C) + (Y_x * M_x) + (Y_y * M_y)
         Y_matrix[vrm_node, vrm_node] += 1e9 
+        
         for cap in cap_config:
             Total_L = ESL_val + L_cap_via
             Y_cap = 1.0 / (ESR + 1j * w * Total_L + 1.0 / (1j * w * cap['C']))
             Y_matrix[cap['node'], cap['node']] += Y_cap
         
         V_ac = np.linalg.solve(Y_matrix, I_ac)
+        
         Z_pcb_pin = V_ac[ic_node] + 1j * w * L_ic_via
         Z_profile_pcb.append(np.abs(Z_pcb_pin))
         
@@ -221,10 +228,10 @@ if st.session_state.run_tune:
     })
 
 # ==========================================
-# 5. Sidebar UI Design
+# 5. Sidebar UI Design (🛡️ Form Protection Enabled)
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ Parameters")
+    st.header("⚙️ Global Specifications")
     st.selectbox("🎯 Target Impedance (Target Z):", ["100 (General)", "10 (Standard IC)", "5 (DDR5)", "1 (CPU Core)"], key="target_z")
     
     st.divider()
@@ -244,36 +251,44 @@ with st.sidebar:
         st.slider("Strike Weight (Penalty Multiplier)", 10, 200, 50, key="target_weight")
     st.divider()
 
-    tab_pcb, tab_pkg, tab_cap = st.tabs(["Stackup & Physical", "Parasitics & PKG", "Decoupling Caps"])
-    with tab_pcb:
-        st.slider("Power Plane Length (mm)", 10.0, 150.0, key="L_mm")
-        st.slider("Power Plane Width (mm)", 5.0, 100.0, key="W_mm")
-        st.slider("Dielectric Constant (Er)", 1.0, 15.0, key="Er")
-        st.slider("Dielectric Thickness d (mil)", 0.1, 20.0, key="d_mil")
-        st.slider("Operating Current (A)", 0.1, 100.0, key="I_op")
+    # 🛡️ Wrap sliders in a form to prevent Cloud UI freezing
+    with st.form("simulation_parameters_form"):
+        st.markdown("### 🎛️ Manual Tuning Parameters")
+        tab_pcb, tab_pkg, tab_cap = st.tabs(["Stackup & Physical", "Parasitics & PKG", "Decoupling Caps"])
         
-    with tab_pkg:
-        st.slider("Capacitor ESL (nH)", 0.01, 2.0, key="ESL")
-        st.slider("Capacitor Via Inductance (nH)", 0.0, 1.0, key="L_cap_via")
-        st.slider("IC Pin Via Inductance (nH)", 0.0, 1.0, key="L_ic_via")
-        st.slider("Package Parasitic Inductance L_pkg (nH)", 0.0, 3.0, key="L_pkg")
-        st.slider("On-Die Capacitance C_die (nF)", 0.0, 2000.0, key="C_die")
-        
-    with tab_cap:
-        st.selectbox("Number of Decoupling Capacitors:", [0, 1, 2, 3, 4, 5], key="num_caps")
-        def cap_input(label, val_key, unit_key):
-            col1, col2 = st.columns([2, 1])
-            col1.number_input(label, min_value=0.1, max_value=10000.0, step=0.01, key=val_key)
-            col2.selectbox("Unit", ["uF", "nF", "pF"], key=unit_key, label_visibility="collapsed")
+        with tab_pcb:
+            st.slider("Power Plane Length (mm)", 10.0, 150.0, key="L_mm")
+            st.slider("Power Plane Width (mm)", 5.0, 100.0, key="W_mm")
+            st.slider("Dielectric Constant (Er)", 1.0, 15.0, key="Er")
+            st.slider("Dielectric Thickness d (mil)", 0.1, 20.0, key="d_mil")
+            st.slider("Operating Current (A)", 0.1, 100.0, key="I_op")
             
-        cap_input("C1 [Ultra-High Freq]:", "C1_val", "C1_unit")
-        cap_input("C2 [High Freq]:", "C2_val", "C2_unit")
-        cap_input("C3 [Mid Freq]:", "C3_val", "C3_unit")
-        cap_input("C4 [Mid-Low Freq]:", "C4_val", "C4_unit")
-        cap_input("C5 [Bulk]:", "C5_val", "C5_unit")
-        
+        with tab_pkg:
+            st.slider("Capacitor ESL (nH)", 0.01, 2.0, key="ESL")
+            st.slider("Capacitor Via Inductance (nH)", 0.0, 1.0, key="L_cap_via")
+            st.slider("IC Pin Via Inductance (nH)", 0.0, 1.0, key="L_ic_via")
+            st.slider("Package Parasitic Inductance L_pkg (nH)", 0.0, 3.0, key="L_pkg")
+            st.slider("On-Die Capacitance C_die (nF)", 0.0, 2000.0, key="C_die")
+            
+        with tab_cap:
+            st.selectbox("Number of Decoupling Capacitors:", [0, 1, 2, 3, 4, 5], key="num_caps")
+            def cap_input(label, val_key, unit_key):
+                col1, col2 = st.columns([2, 1])
+                col1.number_input(label, min_value=0.1, max_value=10000.0, step=0.01, key=val_key)
+                col2.selectbox("Unit", ["uF", "nF", "pF"], key=unit_key, label_visibility="collapsed")
+                
+            cap_input("C1 [Ultra-High Freq]:", "C1_val", "C1_unit")
+            cap_input("C2 [High Freq]:", "C2_val", "C2_unit")
+            cap_input("C3 [Mid Freq]:", "C3_val", "C3_unit")
+            cap_input("C4 [Mid-Low Freq]:", "C4_val", "C4_unit")
+            cap_input("C5 [Bulk]:", "C5_val", "C5_unit")
+            
+        # Submit button for manual updates
+        submit_btn = st.form_submit_button("▶️ Update Simulation", type="primary", use_container_width=True)
+
     st.divider()
-    if st.button("🦅 Run Continuous PSO (Auto Tune)", use_container_width=True, type="primary"):
+    # PSO button remains outside the form to trigger optimization using current state
+    if st.button("🦅 Run Continuous PSO (Auto Tune)", use_container_width=True):
         st.session_state.run_tune = True
         st.rerun()
 
@@ -375,7 +390,7 @@ if st.session_state.use_target:
 fig.add_trace(go.Scatter(x=frequencies, y=Z_pcb, mode='lines', line=dict(color='gray', width=2, dash='dot'),
     name='Impedance at PCB Pin', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (PCB):</b> %{y:.4f} Ω<extra></extra>'))
 
-fig.add_trace(go.Scatter(x=frequencies, y=Z_die, mode='lines', line=dict(color='#00BFFF', width=3), # 使用亮藍色增加深色模式辨識度
+fig.add_trace(go.Scatter(x=frequencies, y=Z_die, mode='lines', line=dict(color='#00BFFF', width=3),
     name='Impedance at Die Pad', hovertemplate='<b>Freq:</b> %{x:.2e} Hz<br><b>Z (Die):</b> %{y:.4f} Ω<extra></extra>'))
 
 y_min_log = np.log10(min(1e-3, target_z_ohm * 0.3))
@@ -386,7 +401,7 @@ fig.update_layout(
     xaxis_title="Frequency (Hz)", yaxis_title="Impedance (Ohms)",
     xaxis_type="log", yaxis_type="log", yaxis=dict(range=[y_min_log, y_max_log]),
     hovermode="x unified", 
-    template="plotly_dark", # ★ 關鍵：強制啟用深色模式
+    template="plotly_dark",
     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(0, 0, 0, 0.5)"),
     height=600, margin=dict(l=20, r=20, t=50, b=20)
 )
