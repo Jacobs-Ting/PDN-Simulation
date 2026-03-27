@@ -35,7 +35,6 @@ for key, value in default_values.items():
 # ==========================================
 @st.cache_data(show_spinner=False)
 def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_via, L_ic_via, L_pkg, C_die, frequencies):
-    # 網格降維至 5x5 (25 nodes) -> 運算量減少 64 倍！
     Nx, Ny = 5, 5
     N_total = Nx * Ny
     dx, dy = L / Nx, W / Ny
@@ -47,16 +46,15 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
     R_sheet = rho_cu / t_cu; R_x = R_sheet * (dx / dy); R_y = R_sheet * (dy / dx)  
     L_cell = U0 * d; C_cell = Er * E0 * (dx * dy) / d
     
-    # 重新映射 5x5 節點座標
-    vrm_node = 2   # Top middle
-    ic_node = 22   # Bottom middle
+    vrm_node = 2   
+    ic_node = 22   
     
     cap_config = []
-    if num_caps >= 1: cap_config.append({'node': 16, 'C': C1}) # Mid-left
-    if num_caps >= 2: cap_config.append({'node': 18, 'C': C2}) # Mid-right
-    if num_caps >= 3: cap_config.append({'node': 11, 'C': C3}) # Center-left
-    if num_caps >= 4: cap_config.append({'node': 13, 'C': C4}) # Center-right
-    if num_caps >= 5: cap_config.append({'node': 7,  'C': C5}) # Top-mid
+    if num_caps >= 1: cap_config.append({'node': 16, 'C': C1})
+    if num_caps >= 2: cap_config.append({'node': 18, 'C': C2})
+    if num_caps >= 3: cap_config.append({'node': 11, 'C': C3})
+    if num_caps >= 4: cap_config.append({'node': 13, 'C': C4})
+    if num_caps >= 5: cap_config.append({'node': 7,  'C': C5})
         
     M_C = np.eye(N_total)
     M_x = np.zeros((N_total, N_total)); M_y = np.zeros((N_total, N_total))
@@ -71,21 +69,18 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
                 nu = i * Ny + (j + 1)
                 M_y[n, n] += 1; M_y[nu, nu] += 1; M_y[n, nu] -= 1; M_y[nu, n] -= 1
 
-    # DC Matrix
     G_matrix = M_x * (1.0 / R_x) + M_y * (1.0 / R_y)
     G_matrix[vrm_node, vrm_node] += 1e9 
     I_dc = np.zeros(N_total); I_dc[ic_node] = -I_op 
     V_dc = np.linalg.solve(G_matrix, I_dc)
     ir_drop_v = 0.0 - V_dc[ic_node] 
     
-    # --- ☢️ 3D TENSOR BATCHED AC SOLVE ☢️ ---
     N_f = len(frequencies)
     w = 2 * np.pi * frequencies
     Y_C_arr = 1j * w * C_cell
     Y_x_arr = 1.0 / (R_x + 1j * w * L_cell)
     Y_y_arr = 1.0 / (R_y + 1j * w * L_cell)
 
-    # Broadcast to shape (N_f, N_total, N_total)
     Y_matrix_batch = (
         Y_C_arr[:, None, None] * M_C[None, :, :] +
         Y_x_arr[:, None, None] * M_x[None, :, :] +
@@ -99,17 +94,17 @@ def calc_core(L, W, Er, d, I_op, num_caps, C1, C2, C3, C4, C5, ESL_val, L_cap_vi
         Y_cap_arr = 1.0 / (ESR + 1j * w * Total_L + 1.0 / (1j * w * cap['C']))
         Y_matrix_batch[:, cap['node'], cap['node']] += Y_cap_arr
 
-    I_ac_batch = np.zeros((N_f, N_total), dtype=complex)
-    I_ac_batch[:, ic_node] = 1.0 + 0j
+    # 🛠️【修復點】：改用單一 1D 向量，讓 NumPy 自動完美廣播 (Broadcasting)
+    I_ac = np.zeros(N_total, dtype=complex)
+    I_ac[ic_node] = 1.0 + 0j
 
     # 一行 LAPACK 解決所有頻率點！
-    V_ac_batch = np.linalg.solve(Y_matrix_batch, I_ac_batch)
+    V_ac_batch = np.linalg.solve(Y_matrix_batch, I_ac)
 
     Z_pcb_pin = V_ac_batch[:, ic_node] + 1j * w * L_ic_via
     Z_profile_pcb = np.abs(Z_pcb_pin)
 
     Z_series = Z_pcb_pin + 1j * w * L_pkg
-    # 避免 C_die = 0 的錯誤
     Z_cdie = R_die + np.where(C_die > 0, 1.0 / (1j * w * C_die + 1e-15), 1e15)
     Z_die_total = np.where(C_die > 0, (Z_series * Z_cdie) / (Z_series + Z_cdie), Z_series)
     Z_profile_die = np.abs(Z_die_total)
@@ -213,7 +208,6 @@ if st.session_state.run_tune:
         except:
             return 1e9
 
-    # 降低稍微一點點粒子數 (40x40) 以確保極限主機的流暢體驗
     best_caps = continuous_pso(cost_func, bounds, num_particles=40, maxiter=40, progress_bar=progress_bar)
     
     c1_v, c1_u = auto_format_cap(best_caps[0] * 1e-12)
